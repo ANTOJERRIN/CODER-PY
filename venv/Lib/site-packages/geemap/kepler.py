@@ -1,0 +1,524 @@
+"""Module for creating interactive maps with kepler.gl."""
+
+# *******************************************************************************#
+# This module contains extra features of the geemap package.                     #
+# The geemap community will maintain the extra features.                         #
+# *******************************************************************************#
+
+import json
+import glob
+import os
+import sys
+from typing import Any
+
+from IPython.display import display, HTML
+import ipywidgets as widgets
+import keplergl
+import pandas as pd
+import requests
+
+from .common import *
+from .osm import *
+
+from . import coreutils
+from . import examples
+
+if "google.colab" in sys.modules:
+    from google.colab import output
+
+    output.enable_custom_widget_manager()
+
+
+class Map(keplergl.KeplerGl):
+    """The Map class inherits keplergl.KeplerGl."""
+
+    def __init__(self, **kwargs):
+        if "center" not in kwargs:
+            kwargs["center"] = [20, 0]
+
+        if "zoom" not in kwargs:
+            kwargs["zoom"] = 1.3
+
+        if "height" not in kwargs:
+            kwargs["height"] = 600
+        elif "px" in str(kwargs["height"]):
+            kwargs["height"] = kwargs["height"].replace("px", "")
+
+        if "width" not in kwargs:
+            kwargs["width"] = 600
+        elif "px" in str(kwargs["width"]):
+            kwargs["width"] = kwargs["width"].replace("px", "")
+
+        if "widescreen" not in kwargs:
+            kwargs["widescreen"] = False
+
+        if "pitch" not in kwargs:
+            kwargs["pitch"] = 0
+
+        if "bearing" not in kwargs:
+            kwargs["bearing"] = 0
+
+        if "dragRotate" not in kwargs:
+            kwargs["dragRotate"] = False
+
+        if "isSplit" not in kwargs:
+            kwargs["isSplit"] = False
+
+        if kwargs["widescreen"]:
+            display(HTML("<style>.container { width:100% !important; }</style>"))
+
+        config = {
+            "version": "v1",
+            "config": {
+                "mapState": {
+                    "latitude": kwargs["center"][0],
+                    "longitude": kwargs["center"][1],
+                    "zoom": kwargs["zoom"],
+                    "bearing": kwargs["bearing"],
+                    "pitch": kwargs["pitch"],
+                    "isSplit": kwargs["isSplit"],
+                    "dragRotate": kwargs["dragRotate"],
+                    "height": kwargs["height"],
+                    "width": kwargs["width"],
+                }
+            },
+        }
+
+        kwargs.pop("widescreen")
+        kwargs.pop("center")
+        kwargs.pop("zoom")
+        if "show_docs" not in kwargs:
+            kwargs["show_docs"] = False
+
+        super().__init__(**kwargs)
+        self.config = config
+
+    def add_geojson(
+        self,
+        in_geojson: str | dict[str, Any],
+        layer_name: str = "Untitled",
+        config: str | None = None,
+        **kwargs,
+    ):
+        """Adds a GeoJSON file to the map.
+
+        Args:
+            in_geojson: The file path or http URL to the input GeoJSON or
+                a dictionary containing the geojson.
+            layer_name: The layer name to be used.
+            config: Local path or HTTP URL to the config file.
+
+        Raises:
+            FileNotFoundError: The provided GeoJSON file could not be found.
+            TypeError: The input geojson must be a type of str or dict.
+        """
+
+        if "encoding" in kwargs:
+            encoding = kwargs["encoding"]
+        else:
+            encoding = "utf-8"
+
+        try:
+            if isinstance(in_geojson, str):
+                if in_geojson.startswith(("http://", "https://")):
+                    data = requests.get(in_geojson).json()
+                else:
+                    in_geojson = os.path.abspath(in_geojson)
+                    if not os.path.exists(in_geojson):
+                        raise FileNotFoundError(
+                            "The provided GeoJSON file could not be found."
+                        )
+
+                    with open(in_geojson, encoding=encoding) as f:
+                        data = json.load(f)
+            elif isinstance(in_geojson, dict):
+                data = in_geojson
+            else:
+                raise TypeError("The input geojson must be a type of str or dict.")
+        except Exception as e:
+            raise Exception(e)
+
+        self.add_data(data, name=layer_name)
+        self.load_config(config)
+
+    def add_shp(
+        self,
+        in_shp: str,
+        layer_name: str = "Untitled",
+        config: str | None = None,
+        **kwargs,
+    ):
+        """Adds a shapefile to the map.
+
+        Args:
+            in_shp: The input file path to the shapefile.
+            layer_name: The layer name to be used.
+            config: Local path or HTTP URL to the config file.
+
+        Raises:
+            FileNotFoundError: The provided shapefile could not be found.
+        """
+        if in_shp.startswith(("http://", "https://")) and in_shp.endswith(".zip"):
+            out_dir = os.path.abspath("./cache/shp")
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+            download_from_url(in_shp, out_dir=out_dir, verbose=False)
+            files = list(glob.glob(os.path.join(out_dir, "*.shp")))
+            if len(files) > 0:
+                in_shp = files[0]
+            else:
+                raise FileNotFoundError(
+                    "The downloaded zip file does not contain any shapefile "
+                    "in the root directory."
+                )
+        else:
+            in_shp = os.path.abspath(in_shp)
+            if not os.path.exists(in_shp):
+                raise FileNotFoundError("The provided shapefile could not be found.")
+
+        geojson = shp_to_geojson(in_shp)
+        self.add_geojson(
+            geojson,
+            layer_name,
+            **kwargs,
+        )
+        self.load_config(config)
+
+    def add_gdf(
+        self,
+        gdf,
+        layer_name="Untitled",
+        config=None,
+        **kwargs,
+    ):
+        """Adds a GeoDataFrame to the map.
+
+        Args:
+            gdf (GeoDataFrame): A GeoPandas GeoDataFrame.
+            layer_name (str, optional): The layer name to be used.
+            config (str, optional): Local path or HTTP URL to the config file.
+        """
+
+        data = gdf_to_geojson(gdf, epsg="4326")
+        self.add_geojson(data, layer_name, **kwargs)
+        self.load_config(config)
+
+    def add_df(
+        self,
+        df,
+        layer_name="Untitled",
+        config=None,
+        **kwargs,
+    ):
+        """Adds a DataFrame to the map.
+
+        Args:
+            df (DataFrame): A Pandas DataFrame.
+            layer_name (str, optional): The layer name to be used.
+            config (str, optional): Local path or HTTP URL to the config file.
+        """
+        del kwargs  # Unused.
+
+        try:
+            self.add_data(data=df, name=layer_name)
+            self.load_config(config)
+        except Exception as e:
+            print(e)
+
+    def add_csv(
+        self,
+        in_csv: str,
+        layer_name: str = "Untitled",
+        config: str | None = None,
+        **kwargs,
+    ):
+        """Adds a CSV to the map.
+
+        Args:
+            in_csv: File path to the CSV.
+            layer_name: The layer name to be used.
+            config: Local path or HTTP URL to the config file.
+        """
+        df = pd.read_csv(in_csv)
+        self.add_df(df, layer_name, config, **kwargs)
+
+    def add_vector(
+        self,
+        filename: str | Any,
+        layer_name: str = "Untitled",
+        config: str | None = None,
+        **kwargs,
+    ):
+        """Adds any geopandas-supported vector dataset to the map.
+
+        Args:
+            filename: Either the absolute or relative path to the file or URL to be
+                opened, or any object with a read() method (such as an open file or
+                StringIO).
+            layer_name: The layer name to use.
+            config: Local path or HTTP URL to the config file.
+        """
+        if not filename.startswith(("http://", "https://")):
+            filename = os.path.abspath(filename)
+
+        ext = os.path.splitext(filename)[1].lower()
+        if ext == ".shp":
+            self.add_shp(
+                filename,
+                layer_name,
+                **kwargs,
+            )
+            self.load_config(config)
+        elif ext in [".json", ".geojson"]:
+            self.add_geojson(
+                filename,
+                layer_name,
+                **kwargs,
+            )
+            self.load_config(config)
+        else:
+            geojson = vector_to_geojson(
+                filename,
+                epsg="4326",
+                **kwargs,
+            )
+
+            self.add_geojson(
+                geojson,
+                layer_name,
+                **kwargs,
+            )
+            self.load_config(config)
+
+    def add_kml(
+        self,
+        in_kml: str,
+        layer_name: str = "Untitled",
+        config: str | None = None,
+        **kwargs,
+    ):
+        """Adds a KML file to the map.
+
+        Args:
+            in_kml: The input file path to the KML.
+            layer_name: The layer name to be used.
+            config: Local path or HTTP URL to the config file.
+
+        Raises:
+            FileNotFoundError: The provided KML file could not be found.
+        """
+
+        if in_kml.startswith(("http://", "https://")) and in_kml.endswith(".kml"):
+            out_dir = os.path.abspath("./cache")
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+            download_from_url(in_kml, out_dir=out_dir, unzip=False, verbose=False)
+            in_kml = os.path.join(out_dir, os.path.basename(in_kml))
+            if not os.path.exists(in_kml):
+                raise FileNotFoundError("The downloaded kml file could not be found.")
+        else:
+            in_kml = os.path.abspath(in_kml)
+            if not os.path.exists(in_kml):
+                raise FileNotFoundError("The provided KML could not be found.")
+
+        self.add_vector(
+            in_kml,
+            layer_name,
+            **kwargs,
+        )
+        self.load_config(config)
+
+    def add_gdf_from_postgis(
+        self,
+        sql,
+        con,
+        layer_name="Untitled",
+        config=None,
+        **kwargs,
+    ):
+        """Reads a PostGIS database and returns data as a GeoDataFrame to be added to the map.
+
+        Args:
+            sql (str): SQL query to execute in selecting entries from database, or name
+                of the table to read from the database.
+            con (sqlalchemy.engine.Engine): Active connection to the database to query.
+            layer_name (str, optional): The layer name to be used.
+            config (str, optional): Local path or HTTP URL to the config file.
+        """
+        gdf = read_postgis(sql, con, **kwargs)
+        gdf = gdf.to_crs("epsg:4326")
+        self.add_gdf(
+            gdf,
+            layer_name,
+            **kwargs,
+        )
+        self.load_config(config)
+
+    def static_map(
+        self,
+        width: int = 950,
+        height: int = 600,
+        read_only: bool = False,
+        out_file: str | None = None,
+        **kwargs,
+    ):
+        """Display a kepler.gl static map in a Jupyter Notebook.
+
+        Args
+            width: Width of the map.
+            height: Height of the map.
+            read_only: Whether to hide the side panel to disable map customization.
+            out_file: Output html file path.
+        """
+        del kwargs  # Unused.
+
+        if isinstance(self, keplergl.KeplerGl):
+            if out_file is None:
+                if os.environ.get("USE_MKDOCS") is not None:
+                    out_file = (
+                        "../maps/" + "kepler_" + coreutils.random_string(3) + ".html"
+                    )
+                else:
+                    out_file = (
+                        "./cache/" + "kepler_" + coreutils.random_string(3) + ".html"
+                    )
+            out_dir = os.path.abspath(os.path.dirname(out_file))
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+
+            output = widgets.Output()
+            with output:
+                self.save_to_html(file_name=out_file, read_only=read_only)
+            display_html(src=out_file, width=width, height=height)
+        else:
+            raise TypeError("The provided map is not a kepler.gl map.")
+
+    def to_html(
+        self,
+        filename: str | None = None,
+        read_only: bool = False,
+        **kwargs,
+    ):
+        """Saves the map as a HTML file.
+
+        Args:
+            filename: The output file path to the HTML file.
+            read_only: Whether to hide the side panel to disable map customization.
+        """
+        del kwargs  # Unused.
+
+        try:
+            save = True
+            if filename is not None:
+                if not filename.endswith(".html"):
+                    raise ValueError("The output file extension must be html.")
+                filename = os.path.abspath(filename)
+                out_dir = os.path.dirname(filename)
+                if not os.path.exists(out_dir):
+                    os.makedirs(out_dir)
+            else:
+                filename = os.path.abspath(coreutils.random_string() + ".html")
+                save = False
+
+            output = widgets.Output()
+            with output:
+                self.save_to_html(file_name=filename, read_only=read_only)
+
+            if not save:
+                out_html = ""
+                with open(filename) as f:
+                    lines = f.readlines()
+                    out_html = "".join(lines)
+                os.remove(filename)
+                return out_html
+
+        except Exception as e:
+            raise Exception(e)
+
+    def to_streamlit(
+        self,
+        width: int = 800,
+        height: int = 600,
+        responsive: bool = True,
+        scrolling: bool = False,
+        **kwargs,
+    ):
+        """Renders `keplergl.KeplerGl` map figure in a Streamlit app.
+
+        Args:
+            width: Width of the map.
+            height: Height of the map.
+            responsive: Whether to make the map responsive.
+            scrolling: If True, show a scrollbar when the content is larger than the
+                iframe. Otherwise, do not show a scrollbar.
+
+        Raises:
+            ImportError: If streamlit is not installed.
+
+        Returns:
+            streamlit.components: components.html object.
+        """
+        import streamlit as st
+        import streamlit.components.v1 as components
+
+        del kwargs  # Unused.
+
+        html = self._repr_html_()
+        if responsive:
+            make_map_responsive = """
+            <style>
+            [title~="st.iframe"] { width: 100%}
+            </style>
+            """
+            st.markdown(make_map_responsive, unsafe_allow_html=True)
+        return components.html(html, width=width, height=height, scrolling=scrolling)
+
+    def load_config(self, config: str | None = None):
+        """Loads a kepler.gl config file.
+
+        Args:
+            config: Local path or HTTP URL to the config file.
+
+        Raises:
+            FileNotFoundError: The provided config file could not be found.
+            TypeError: The provided config file is not a kepler.gl config file.
+        """
+        if config is None:
+            pass
+        elif isinstance(config, dict):
+            self.config = config
+        elif isinstance(config, str):
+            if config.startswith(("http://", "https://")):
+                r = requests.get(config)
+                self.config = r.json()
+            elif os.path.isfile(config):
+                with open(config) as f:
+                    self.config = json.load(f)
+            else:
+                raise FileNotFoundError("The provided config file could not be found.")
+        else:
+            raise TypeError("The provided config is not a dictionary or filepath.")
+
+    def save_config(self, out_json: str):
+        """Saves a kepler.gl config file.
+
+        Args:
+            out_json: Output file path to the config file.
+
+        Raises:
+            ValueError: The output file extension must be json.
+            TypeError: The provided filepath is invalid.
+        """
+        if isinstance(out_json, str):
+            if not out_json.endswith(".json"):
+                raise ValueError("The output file extension must be json.")
+            out_json = os.path.abspath(out_json)
+            out_dir = os.path.dirname(out_json)
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+
+            json_str = json.dumps(self.config, indent=2)
+            with open(out_json, "w") as f:
+                f.write(json_str)
+        else:
+            raise TypeError("The provided filepath is invalid.")
